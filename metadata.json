@@ -1,0 +1,7 @@
+{
+  "name": "EscheatGuard",
+  "description": "AI-powered compliance decision-support dashboard for insurance escheatment (unclaimed property) processing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
