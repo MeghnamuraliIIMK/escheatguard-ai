@@ -1,5 +1,4 @@
 import express, { Request, Response } from 'express';
-import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -12,6 +11,26 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json());
+
+// Enable CORS for all incoming requests
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
+// Normalize URL for Vercel serverless functions:
+// When Vercel rewrites /api/(.*) to /api, req.originalUrl retains the full requested path (e.g. /api/assess)
+app.use((req, res, next) => {
+  if (req.originalUrl && req.url !== req.originalUrl) {
+    req.url = req.originalUrl;
+  }
+  next();
+});
 
 // Initialize Gemini SDK with telemetry header as specified in skill
 const ai = new GoogleGenAI({
@@ -696,12 +715,12 @@ function getSessionMetrics() {
 }
 
 // Health check
-app.get('/api/health', (req: Request, res: Response) => {
+app.get(['/api/health', '/health'], (req: Request, res: Response) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
 // Get session state
-app.get('/api/session', (req: Request, res: Response) => {
+app.get(['/api/session', '/session'], (req: Request, res: Response) => {
   res.json({
     metrics: getSessionMetrics(),
     history: sessionHistory,
@@ -709,13 +728,13 @@ app.get('/api/session', (req: Request, res: Response) => {
 });
 
 // Reset session
-app.post('/api/session/reset', (req: Request, res: Response) => {
+app.post(['/api/session/reset', '/session/reset'], (req: Request, res: Response) => {
   sessionHistory = [];
   res.json({ success: true, metrics: getSessionMetrics(), history: [] });
 });
 
 // Full assessment standard endpoint
-app.post('/api/assess', async (req: Request, res: Response) => {
+app.post(['/api/assess', '/assess'], async (req: Request, res: Response) => {
   const record: ComplianceRecord = req.body;
   if (!record || !record.policyholderName || !record.policyNumber) {
     res.status(400).json({ error: 'Invalid record payload' });
@@ -770,7 +789,7 @@ app.post('/api/assess', async (req: Request, res: Response) => {
 });
 
 // SSE Streaming pipeline for live step-by-step progress
-app.post('/api/assess/stream', async (req: Request, res: Response) => {
+app.post(['/api/assess/stream', '/assess/stream', '/api/stream', '/stream'], async (req: Request, res: Response) => {
   const record: ComplianceRecord = req.body;
   if (!record || !record.policyholderName || !record.policyNumber) {
     res.status(400).json({ error: 'Invalid record payload' });
@@ -778,8 +797,12 @@ app.post('/api/assess/stream', async (req: Request, res: Response) => {
   }
 
   res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  if (typeof (res as any).flushHeaders === 'function') {
+    (res as any).flushHeaders();
+  }
 
   const sendEvent = (event: string, data: any) => {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -862,7 +885,12 @@ const isProduction = process.env.NODE_ENV === 'production';
 const PORT = process.env.PORT || 3000;
 
 async function startServer() {
+  if (process.env.VERCEL) {
+    return;
+  }
+
   if (!isProduction) {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'custom',
@@ -895,6 +923,13 @@ async function startServer() {
   });
 }
 
-startServer().catch(err => {
-  console.error('Failed to start server:', err);
-});
+// Only launch standalone HTTP server when not running in a Vercel serverless function environment
+if (!process.env.VERCEL) {
+  startServer().catch(err => {
+    console.error('Failed to start server:', err);
+  });
+}
+
+export { app };
+export default app;
+
